@@ -1,0 +1,272 @@
+Currency:
+LOAD
+    CurrencyKey,
+    CurrencyAlternateKey,
+    CurrencyName
+FROM [lib://QVD/Currency.qvd]
+(qvd);
+
+
+MasterCalendar:
+LOAD
+    DateKey,
+    DisplayDate,
+    "Day",
+    DayAbbr,
+    YearWeekNbr,
+    "Month",
+    MonthAbbr,
+    MonthNbr,
+    YearNum,
+    YearMonth
+FROM [lib://QVD/MasterCalendar.qvd] (qvd)
+Where	
+	DisplayDate >= '2016-01-01' and
+    DisplayDate <= '2020-11-30';
+    
+GeoLocation:
+LOAD
+    GeographyKey,
+    City,
+    StateProvinceName,
+    CountryRegionName
+//    SalesTerritoryKey
+//    Latitude,
+//    Longitude
+FROM [lib://QVD/Geolocation.qvd] (qvd);
+
+Product:
+LOAD
+    ProductKey,
+    ProductSubcategoryKey,
+    ProductName,
+    StandardCost
+//    FinishedGoodsFlag,
+//    "Color",
+//    ReorderPoint,
+//    ListPrice,
+//    DaysToManufacture,
+//    ProductLine,
+//    DealerPrice,
+//    Manufacturer,
+//    Description,
+//    Status,
+//    SupplierKey
+FROM [lib://QVD/Product.qvd] (qvd);
+
+ProductSubCategory:
+LOAD
+    ProductSubcategoryKey,
+    ProductSubcategoryName,
+    ProductCategoryKey
+FROM [lib://QVD/ProductSubCategory.qvd] (qvd);
+
+
+ForexTemp:
+LOAD
+	DateKey & CurrencyKey as DatedCurrencyKey,
+    CurrencyKey,
+    DateKey,
+    CloseDate,
+    Country,
+    xRate
+FROM [lib://QVD/ForeignExchangeRates2016To2020.qvd] (qvd);
+
+preWebSales:
+LOAD
+    DateKey,
+    ProductKey,
+    CustomerKey,
+    PromotionKey,
+    CurrencyKey, 
+    lookup('xRate','DatedCurrencyKey',DateKey & CurrencyKey,'ForexTemp') as xRate, 
+    SaleTypeKey,
+    OrderDate,
+    DueDate,
+    ShipDate,
+    SalesOrderNumber,
+    SalesOrderLineNumber,
+    RevisionNumber,
+    OrderQuantity,
+    UnitPrice,
+    UnitPriceDiscountPct,
+    ProductStandardCost,
+    TotalProductCost,
+    SalesAmount,
+    TaxAmt,
+    Freight,
+    ExtendedAmount
+FROM [lib://QVD/WebSales.qvd] (qvd);
+
+drop table ForexTemp;
+
+NoConcatenate											
+WebSales:
+LOAD
+    DateKey,
+    ProductKey,
+    DateKey & ProductKey & SalesOrderNumber as DateBridgeKey,
+    'WebSales' as SourceTable,
+	CustomerKey,
+//    PromotionKey,
+    CurrencyKey, 
+    if(IsNull(xRate),1,xRate) as xRate, 
+	SaleTypeKey,
+    OrderDate,
+    DueDate,
+    ShipDate,
+    SalesOrderNumber,
+//    SalesOrderLineNumber,
+//    RevisionNumber,
+    OrderQuantity,
+    UnitPrice,
+    UnitPriceDiscountPct,
+//    ProductStandardCost,
+    TotalProductCost,
+    SalesAmount,
+    TaxAmt,
+    Freight
+//    ExtendedAmount
+resident preWebSales;
+
+drop table preWebSales;
+
+Customer:
+LOAD
+    CustomerKey,
+    GeographyKey,
+//    CustomerAlternateKey,
+//    Title,
+//    FirstName,
+//    MiddleName,
+    LastName,
+//    NameStyle,
+    BirthDate,
+    MaritalStatus,
+//    Suffix,
+    Gender,
+//    EmailAddress,
+    YearlyIncome,
+    TotalChildren,
+    NumberChildrenAtHome,
+    EducationLevel,
+    Occupation,
+    HouseOwnerFlag,
+    NumberCarsOwned,
+//    AddressLine1,
+//    AddressLine2,
+//    Phone,
+    DateFirstPurchase,
+//    CommuteDistance,
+    CustCreateDate,
+    if(CustEndDate='NULL','2050-12-31',CustEndDate) as CustEndDate
+FROM [lib://QVD/Customer.qvd] (qvd);
+
+inner join IntervalMatch(OrderDate)
+Load Distinct CustCreateDate,CustEndDate
+resident Customer;
+
+SaleType:
+LOAD
+    SaleTypeKey,
+    SaleTypeName,
+    SaleTypeCategory,
+    TypeStartDate,
+    TypeEndDate
+FROM [lib://QVD/SaleType.qvd] (qvd);
+
+inner join IntervalMatch(OrderDate) 
+load Distinct TypeStartDate,TypeEndDate
+Resident SaleType;
+
+
+let condMapCalc 	= 1 ;			// indicator for Map
+
+let sldPriceAdd 	= 1 ;      		// Slider variable for setting the Test price affecting Sales & Profit
+let sldPDiscount    = 1 ;      		// Slider variable for setting the Test Sales & Profit by a discounted amount 
+
+let saOrdered		= 'DateType={"Ordered"}'   	;  
+let saScheduled		= 'DateType={"Scheduled"}'  ;   
+let saShipped 		= 'DateType={"Shipped"}'    ;   
+Targets:
+LOAD
+    DateKey,
+//     "Year",
+//     "Month",
+    SalesTarget
+FROM [lib://QVD/SalesTargets.qvd] (qvd);
+
+Concatenate (WebSales)
+LOAD
+	DateKey & ProductKey & 0 as DateBridgeKey ,
+    'Stock' as SourceTable,
+	ProductKey,
+    DateKey,  
+//  UnitCost,
+//  StockOut,
+//  StockOutDate,
+//  StockIn,
+//  StockInDate,
+    StockOnHand,	// Non aggregatable over time as this is a snapshot of position 
+
+	// Set flags for reporting, best done in loader as this is more performant than
+    // testing at calculation i.e. SA level
+    
+    if(StockOnHand>MaxStockLevel,1) as flagOverStocked,
+    if(StockOnHand>MaxStockLevel,'Over Stocked') as msgOverStocked,  
+    
+    if(StockOnHand=0,1) as flagOutOfStock,    
+    if(StockOnHand=0,'Out of Stock') as msgOutOfStock,     
+
+	if(StockOnHand>0 and StockOnHand<MinStockLevel,1) as flagUnderStocked,    
+    if(StockOnHand>0 and StockOnHand<MinStockLevel,'Under Stocked') as msgUnderStocked, 
+    
+    // Exercise 12.2 student coded this status
+    
+    if(StockOnHand>=MinStockLevel and  StockOnHand<=MaxStockLevel,1) as flagStockLevelOK,
+    if(StockOnHand>=MinStockLevel and  StockOnHand<=MaxStockLevel,'Stock Lvl OK') as msgStockLevelOK,    
+	
+//  StockBackOrderQty,
+//  StockBackOrderDate,
+    MinStockLevel,
+    MaxStockLevel
+//  StockTakeFlag
+	
+FROM [lib://QVD/ProductInventory.qvd] (qvd);
+
+
+ 
+DateBridge:
+Load
+	distinct(DateBridgeKey),
+    DateKey,
+    'Stock' as DateType
+resident WebSales where SourceTable='Stock';
+
+Load
+	distinct(DateBridgeKey),
+    DateKey,
+    'Ordered' as DateType
+resident WebSales where SourceTable='WebSales';
+
+Load
+	distinct(DateBridgeKey),
+    num(year(DueDate),'0000') & num(month(DueDate),'00') & num(day(DueDate),'00') as DateKey,
+    'Scheduled' as DateType
+resident WebSales where SourceTable='WebSales';
+    
+
+Load
+	distinct(DateBridgeKey),
+    num(year(ShipDate),'0000') & num(month(ShipDate),'00') & num(day(ShipDate),'00') as DateKey,
+    'Shipped' as DateType
+resident WebSales where SourceTable='WebSales';
+
+drop field DateKey,SourceTable from WebSales;
+
+
+
+
+
+
+                    
